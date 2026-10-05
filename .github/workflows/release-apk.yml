@@ -1,4 +1,4 @@
-name: Build and publish signed release APK
+name: Build and publish unsigned release APK
 
 on:
   push:
@@ -11,19 +11,13 @@ on:
 permissions:
   contents: write
 
-# Required repository secrets:
-# ANDROID_KEYSTORE_BASE64: base64-encoded release keystore
-# ANDROID_KEYSTORE_PASSWORD: keystore password
-# ANDROID_KEY_ALIAS: signing key alias
-# ANDROID_KEY_PASSWORD: signing key password
-
 concurrency:
-  group: signed-release-apk-${{ github.ref }}
+  group: unsigned-release-apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-signed-release-apk:
-    name: Build signed release APK
+  build-unsigned-release-apk:
+    name: Build unsigned release APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -40,44 +34,19 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Prepare release signing files
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          test -n "$ANDROID_KEYSTORE_BASE64"
-          test -n "$ANDROID_KEYSTORE_PASSWORD"
-          test -n "$ANDROID_KEY_ALIAS"
-          test -n "$ANDROID_KEY_PASSWORD"
-
-          umask 077
-
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > release.keystore
-
-          cat > keystore.properties <<EOF
-          storeFile=release.keystore
-          storePassword=$ANDROID_KEYSTORE_PASSWORD
-          keyAlias=$ANDROID_KEY_ALIAS
-          keyPassword=$ANDROID_KEY_PASSWORD
-          EOF
-
-      - name: Build signed release APK
+      - name: Build unsigned release APK
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace --console=plain
 
       - name: Rename APK
         run: |
           mv app/build/outputs/apk/release/*.apk \
-            app/build/outputs/apk/release/Messaging-${GITHUB_REF_NAME}.apk
+            "app/build/outputs/apk/release/Messaging-${GITHUB_REF_NAME}-unsigned.apk"
 
-      - name: Upload APK artifact
+      - name: Upload unsigned APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: messaging-release-apk-${{ github.ref_name }}
-          path: app/build/outputs/apk/release/Messaging-${{ github.ref_name }}.apk
+          name: messaging-release-apk-${{ github.ref_name }}-unsigned
+          path: app/build/outputs/apk/release/Messaging-${{ github.ref_name }}-unsigned.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -87,10 +56,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            "app/build/outputs/apk/release/Messaging-${GITHUB_REF_NAME}.apk" \
-            --title "Messaging ${GITHUB_REF_NAME}" \
+            "app/build/outputs/apk/release/Messaging-${GITHUB_REF_NAME}-unsigned.apk" \
+            --title "Messaging ${GITHUB_REF_NAME} unsigned" \
             --generate-notes
-
-      - name: Remove release signing files
-        if: always()
-        run: rm -f keystore.properties release.keystore
