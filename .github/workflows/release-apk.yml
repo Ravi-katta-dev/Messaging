@@ -1,4 +1,4 @@
-name: Build signed release APK
+name: Build and publish signed release APK
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 # Required repository secrets:
 # ANDROID_KEYSTORE_BASE64: base64-encoded release keystore
@@ -55,6 +55,7 @@ jobs:
           test -n "$ANDROID_KEY_PASSWORD"
 
           umask 077
+
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > release.keystore
 
           cat > keystore.properties <<EOF
@@ -67,13 +68,28 @@ jobs:
       - name: Build signed release APK
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace --console=plain
 
-      - name: Upload signed release APK
+      - name: Rename APK
+        run: |
+          mv app/build/outputs/apk/release/*.apk \
+            app/build/outputs/apk/release/Messaging-${GITHUB_REF_NAME}.apk
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: messaging-release-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: messaging-release-apk-${{ github.ref_name }}
+          path: app/build/outputs/apk/release/Messaging-${{ github.ref_name }}.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "app/build/outputs/apk/release/Messaging-${GITHUB_REF_NAME}.apk" \
+            --title "Messaging ${GITHUB_REF_NAME}" \
+            --generate-notes
 
       - name: Remove release signing files
         if: always()
