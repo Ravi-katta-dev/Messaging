@@ -1,4 +1,4 @@
-name: Build APKs
+name: Build Signed Release and Debug APKs
 
 on:
   push:
@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
+
       - name: Check out sources
         uses: actions/checkout@v4
         with:
@@ -38,14 +39,98 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: gradle
 
+      - name: Prepare release keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+        run: |
+          KEYSTORE_PATH="${RUNNER_TEMP}/release.keystore"
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+
+            echo "Using GitHub Actions secret keystore"
+
+          else
+            echo "No release keystore found."
+            echo "Generating new release keystore..."
+
+            keytool -genkeypair \
+              -v \
+              -keystore "$KEYSTORE_PATH" \
+              -alias messaging \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass password123 \
+              -keypass password123 \
+              -dname "CN=Messaging, OU=Dev, O=Messaging, L=India, S=AP, C=IN"
+
+            STORE_PASSWORD="password123"
+            KEY_ALIAS="messaging"
+            KEY_PASSWORD="password123"
+
+            echo ""
+            echo "=============================="
+            echo "SAVE THESE AS GITHUB SECRETS"
+            echo "=============================="
+            echo "RELEASE_STORE_PASSWORD=$STORE_PASSWORD"
+            echo "RELEASE_KEY_ALIAS=$KEY_ALIAS"
+            echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+            echo ""
+            echo "RELEASE_KEYSTORE_BASE64="
+            base64 -w0 "$KEYSTORE_PATH"
+            echo ""
+            echo "=============================="
+          fi
+
+          echo "path=$KEYSTORE_PATH" >> "$GITHUB_OUTPUT"
+          echo "store_password=$STORE_PASSWORD" >> "$GITHUB_OUTPUT"
+          echo "key_alias=$KEY_ALIAS" >> "$GITHUB_OUTPUT"
+          echo "key_password=$KEY_PASSWORD" >> "$GITHUB_OUTPUT"
+
+
+      - name: Create keystore.properties
+        id: keystore_props
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          STORE_PASSWORD: ${{ steps.keystore.outputs.store_password }}
+          KEY_ALIAS: ${{ steps.keystore.outputs.key_alias }}
+          KEY_PASSWORD: ${{ steps.keystore.outputs.key_password }}
+
+        run: |
+          PROPS_PATH="${RUNNER_TEMP}/keystore.properties"
+
+          cat > "$PROPS_PATH" <<EOF
+          storeFile=${KEYSTORE_PATH}
+          storePassword=${STORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          keyPassword=${KEY_PASSWORD}
+          EOF
+
+          cp "$PROPS_PATH" "${{ github.workspace }}/keystore.properties"
+
+          echo "path=$PROPS_PATH" >> "$GITHUB_OUTPUT"
+
+
       - name: Build release and debug APKs
-        run: ./gradlew :app:assembleRelease :app:assembleDebug --no-daemon --stacktrace --console=plain
+        run: |
+          ./gradlew :app:assembleRelease :app:assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            --console=plain
+
 
       - name: Rename APKs
         id: apks
         run: |
           REF_NAME="${GITHUB_REF_NAME//\//-}"
-          RELEASE_APK="${APP_NAME}-${REF_NAME}-release-unsigned.apk"
+
+          RELEASE_APK="${APP_NAME}-${REF_NAME}-release-signed.apk"
           DEBUG_APK="${APP_NAME}-${REF_NAME}-debug.apk"
 
           mv "${RELEASE_APK_DIR}"/*.apk "${RELEASE_APK_DIR}/${RELEASE_APK}"
@@ -54,13 +139,34 @@ jobs:
           echo "release_apk_path=${RELEASE_APK_DIR}/${RELEASE_APK}" >> "$GITHUB_OUTPUT"
           echo "debug_apk_path=${DEBUG_APK_DIR}/${DEBUG_APK}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload release APK (unsigned)
+
+      - name: Verify release APK signature
+        run: |
+          APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" \
+            -name apksigner \
+            -type f | sort -V | tail -n 1)
+
+          "$APKSIGNER" verify \
+            --print-certs \
+            "${{ steps.apks.outputs.release_apk_path }}"
+
+
+      - name: Clean up signing material
+        if: always()
+        run: |
+          rm -f "${{ steps.keystore.outputs.path }}"
+          rm -f "${{ steps.keystore_props.outputs.path }}"
+          rm -f "${{ github.workspace }}/keystore.properties"
+
+
+      - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_NAME }}-${{ github.ref_name }}-release-unsigned
+          name: ${{ env.APP_NAME }}-${{ github.ref_name }}-release-signed
           path: ${{ steps.apks.outputs.release_apk_path }}
           if-no-files-found: error
           retention-days: 14
+
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
